@@ -1,113 +1,162 @@
 using System;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Xml.Linq;
 
 namespace LabWork
 {
+    // ====================================================================
+    // 1. МОДЕЛІ ДАНИХ (Data Models)
+    // ====================================================================
+    public class DataModel
+    {
+        [JsonPropertyName("id")]
+        public int Id { get; set; }
+
+        [JsonPropertyName("title")]
+        public string Title { get; set; }
+
+        [JsonPropertyName("content")]
+        public string Content { get; set; }
+    }
+
+    // ====================================================================
+    // 2. ІНТЕРФЕЙСИ (Interfaces)
+    // ====================================================================
+
     /// <summary>
-    /// 1. Цільовий інтерфейс (Target): Очікуваний інтерфейс для клієнта (робота з XML).
+    /// Цільовий інтерфейс (Target): Інтерфейс, який очікує клієнт (робота з XML).
     /// </summary>
     public interface IXmlConverter
     {
-        string ConvertToXml(string data);
+        string ConvertToXml(string jsonData);
     }
 
     /// <summary>
-    /// 2. Адаптований клас (Adaptee): Існуючий клас з несумісним інтерфейсом (робота з JSON).
+    /// Інтерфейс для адаптованого класу: Дозволяє інверсію залежностей (DIP).
     /// </summary>
-    public class JsonService
+    public interface IJsonService
     {
-        public string GetJsonData(string input)
+        string GetJsonData(int id, string input);
+    }
+
+    // ====================================================================
+    // 3. АДАПТОВАНИЙ КЛАС (Adaptee)
+    // ====================================================================
+
+    /// <summary>
+    /// Існуючий клас, інтерфейс якого несумісний (працює з JSON).
+    /// </summary>
+    public class JsonService : IJsonService
+    {
+        public string GetJsonData(int id, string input)
         {
-            // У реальному житті тут може бути отримання даних або складна логіка,
-            // що повертає JSON-рядок.
+            // Створення об'єкта моделі
+            var data = new DataModel
+            {
+                Id = id,
+                Title = $"Елемент_{id}",
+                Content = input
+            };
+
             Console.WriteLine($"JsonService: Отримано вхідні дані: '{input}'. Повертається JSON.");
-            return "{ \"name\": \"Data\", \"value\": \"" + input + "\" }";
+            
+            // Використання System.Text.Json для коректної серіалізації
+            return JsonSerializer.Serialize(data);
         }
     }
 
+    // ====================================================================
+    // 4. АДАПТЕР (Adapter)
+    // ====================================================================
+
     /// <summary>
-    /// 3. Адаптер (Adapter): Перекладач, який конвертує JSON в XML.
-    /// Реалізує цільовий інтерфейс (IXmlConverter) і використовує адаптований клас (JsonService).
+    /// Адаптер, який реалізує IXmlConverter і використовує IJsonService,
+    /// виконуючи конвертацію JSON -> XML.
     /// </summary>
     public class JsonToXmlAdapter : IXmlConverter
     {
-        private readonly JsonService _jsonService;
+        private readonly IJsonService _jsonService;
 
-        public JsonToXmlAdapter(JsonService jsonService)
+        // Dependency Injection: Впровадження IJsonService через конструктор
+        // для дотримання принципу інверсії залежностей та інкапсуляції.
+        public JsonToXmlAdapter(IJsonService jsonService)
         {
-            // Принцип інкапсуляції: поле _jsonService є private, і доступ до нього
-            // контролюється через конструктор.
             _jsonService = jsonService;
         }
 
         public string ConvertToXml(string inputData)
         {
-            // Крок 1: Виклик методу адаптованого класу для отримання JSON.
-            string jsonData = _jsonService.GetJsonData(inputData);
+            try
+            {
+                // Крок 1: Отримання JSON-даних через адаптований сервіс
+                string jsonData = _jsonService.GetJsonData(101, inputData);
 
-            // Крок 2: Логіка конвертації JSON в XML.
-            // *Зверніть увагу: Це спрощена симуляція конвертації.*
-            string xmlData = SimulateJsonToXmlConversion(jsonData);
+                // Крок 2: Коректний парсинг JSON у DataModel
+                DataModel model = JsonSerializer.Deserialize<DataModel>(jsonData);
+                if (model == null)
+                {
+                    throw new JsonException("Failed to deserialize JSON into DataModel (result is null).");
+                }
 
-            Console.WriteLine($"Adapter: Конвертовано JSON в XML.");
-            return xmlData;
-        }
+                // Крок 3: Формування XML за допомогою LINQ to XML
+                // Це забезпечує коректне екранування спеціальних символів (наприклад, <, >, &)
+                XElement xml = new XElement("DataExchange",
+                    new XElement("Record",
+                        new XElement("ID", model.Id),
+                        new XElement("Title", model.Title),
+                        new XElement("Content", model.Content)
+                    )
+                );
 
-        // Спрощений метод конвертації для прикладу
-        private string SimulateJsonToXmlConversion(string json)
-        {
-            // Приклад конвертації: "{ "name": "Data", "value": "test" }" -> "<root><name>Data</name><value>test</value></root>"
-            string xml = json
-                .Replace("{", "<root>")
-                .Replace("}", "</root>")
-                .Replace(":", ">")
-                .Replace(",", "</root><root>")
-                .Replace("\"", "");
-            
-            // Очищення та форматування для кращого вигляду (дуже спрощено)
-            xml = xml.Replace("<root>", Environment.NewLine + "  <");
-            xml = xml.Replace("</root>", "  </");
-            xml = xml.Replace(">", ">" + Environment.NewLine);
-            xml = xml.Replace("  <  ", "  <");
-            xml = xml.Replace("  </  ", "  </");
-
-            return $"<DataExchange>{xml}</DataExchange>";
+                Console.WriteLine("Adapter: Успішно конвертовано JSON в XML.");
+                return xml.ToString();
+            }
+            catch (JsonException ex)
+            {
+                // Обробка помилок при некоректному форматі JSON
+                Console.WriteLine($"Adapter Error: Помилка парсингу JSON: {ex.Message}");
+                return $"<Error Type=\"JsonParsing\">{ex.Message}</Error>";
+            }
+            catch (Exception ex)
+            {
+                // Загальна обробка інших помилок
+                Console.WriteLine($"Adapter Error: Невідома помилка: {ex.Message}");
+                return $"<Error Type=\"General\">{ex.Message}</Error>";
+            }
         }
     }
-    
-    // --- Основний клас програми ---
+
+    // ====================================================================
+    // 5. ОСНОВНА ПРОГРАМА (Program)
+    // ====================================================================
+
     class Program
     {
         static void Main(string[] args)
         {
             Console.OutputEncoding = System.Text.Encoding.UTF8;
-            Console.WriteLine("--- Демонстрація патерну Адаптер: JSON -> XML ---");
-            Console.WriteLine("Натисніть будь-яку клавішу для початку...");
-            Console.ReadKey(true);
-            Console.WriteLine("---");
+            Console.WriteLine("--- Демонстрація структурного патерну Адаптер (JSON -> XML) ---");
 
-            // 1. Створення екземпляру існуючої (адаптованої) служби JSON.
-            JsonService jsonService = new JsonService();
+            // 1. Ініціалізація залежностей
+            // Ми створюємо об'єкт JsonService (Adaptee)
+            IJsonService jsonService = new JsonService();
 
-            // 2. Створення екземпляру Адаптера, передаючи йому об'єкт JsonService.
-            // Адаптер дозволяє нам викликати JsonService через інтерфейс IXmlConverter.
+            // 2. Створення Адаптера
+            // Клієнт взаємодіє з Адаптером через інтерфейс IXmlConverter (Target)
             IXmlConverter adapter = new JsonToXmlAdapter(jsonService);
 
-            // 3. Клієнтський код, який очікує IXmlConverter, тепер може працювати з JsonService
-            // завдяки нашому адаптеру.
-            string clientInput = "Лабораторна робота ООП";
-            Console.WriteLine($"Клієнт: Запитую конвертацію даних: '{clientInput}'");
+            // 3. Клієнтський код, який очікує IXmlConverter
+            string clientInput = "Дані для обміну: <тест> & \"опис\"";
+            Console.WriteLine($"\nКлієнт: Запитую конвертацію даних: '{clientInput}'");
 
             // Виклик методу цільового інтерфейсу
             string xmlResult = adapter.ConvertToXml(clientInput);
 
-            Console.WriteLine("---");
+            Console.WriteLine("--------------------------------------------------");
             Console.WriteLine("Клієнт: Отриманий XML-результат:");
             Console.WriteLine(xmlResult);
-            Console.WriteLine("---");
-
-            // Перевірка, якби ми викликали JsonService безпосередньо:
-            // string jsonDirect = jsonService.GetJsonData(clientInput);
-            // Console.WriteLine($"JsonService напряму: {jsonDirect}");
+            Console.WriteLine("--------------------------------------------------");
         }
     }
 }
